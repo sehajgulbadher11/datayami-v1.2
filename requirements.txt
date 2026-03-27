@@ -1,0 +1,11 @@
+streamlit>=1.40.0
+pandas
+numpy
+python-dotenv
+groq
+langchain
+langchain-groq
+plotly
+matplotlib
+seaborn
+tabulate
