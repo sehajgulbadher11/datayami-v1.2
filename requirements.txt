@@ -5,6 +5,7 @@ python-dotenv
 groq
 langchain
 langchain-groq
+langchain-experimental
 plotly
 matplotlib
 seaborn

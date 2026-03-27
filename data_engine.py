@@ -1,161 +1,112 @@
 import pandas as pd
 import traceback
-from query_parser import parse_query
+from query_parser import rewrite_query
 import visualization as viz
+from utils import get_llm
+from langchain_experimental.agents.agent_toolkits import create_pandas_dataframe_agent
 
-def query_data(df: pd.DataFrame, user_query: str):
-
+def execute_dataframe_agent(df: pd.DataFrame, query: str, chat_history: list = None) -> dict:
+    """
+    Executes a user query on the pandas DataFrame using LangChain's Pandas Agent.
+    """
     try:
-
+        # 1. Clean up dates immediately if possible
         for col in df.columns:
             if 'date' in col.lower() and df[col].dtype == 'object':
                 try:
                     df[col] = pd.to_datetime(df[col])
                 except Exception:
                     pass
-
-
-        parsed = parse_query(user_query, df.columns.tolist())
-        intent = parsed.get("intent", "unknown")
-        col = parsed.get("column", None)
-        groupby = parsed.get("group_by_column", None)
-        metric = parsed.get("metric", None)
-        sorting = parsed.get("sorting", None)
-
-        print(f"Routing parsed intent: {parsed}")
-
-
-        if intent == "dataset_overview":
-            info = f"This dataset has **{len(df)} rows** and **{len(df.columns)} columns**.\n\nColumns: {', '.join(df.columns)}."
-            try:
-                fig = viz.overview_chart(df)
-                return {"type": "both", "content": info, "figure": fig}
-            except Exception as e:
-                return {"type": "text", "content": info + f"\n\n(Note: Could not generate overview chart automatically.)"}
-
-        elif intent == "missing_values":
-            missing = df.isnull().sum()
-            missing = missing[missing > 0]
-            if len(missing) == 0:
-                return {"type": "text", "content": "There are no missing values in this dataset!"}
-            txt = "Count of missing values per column:\n" + "\n".join([f"- **{k}**: {v}" for k, v in missing.items()])
-            return {"type": "text", "content": txt}
-
-        elif intent == "column_types":
-            types = df.dtypes.to_dict()
-            txt = "Data Types mapped in Pandas:\n" + "\n".join([f"- **{k}**: {v}" for k, v in types.items()])
-            return {"type": "text", "content": txt}
-
-        elif intent == "count_rows":
-            return {"type": "text", "content": f"The dataset contains a total of **{len(df):,}** rows."}
-
-        elif intent == "max_value":
-            if not col or col not in df.columns:
-                return {"error": "I couldn't identify the exact column to calculate the maximum for. Make sure it's spelt correctly."}
-            if not pd.api.types.is_numeric_dtype(df[col]):
-                return {"error": f"The column '{col}' is not a numeric value, so I cannot find its maximum."}
-                
-            max_val = df[col].max()
-            idx = df[col].idxmax()
-            
-
-            name_context = ""
-            if 'name' in df.columns.str.lower():
-                name_col = [c for c in df.columns if c.lower() == 'name'][0]
-                name_context = f" (Belongs to: {df.loc[idx, name_col]})"
-            elif df.columns[0] != col and df[df.columns[0]].dtype == 'object':
-                 name_context = f" (Belongs to: {df.loc[idx, df.columns[0]]})"
-                 
-            rounded = round(max_val, 2) if isinstance(max_val, float) else max_val
-            return {"type": "text", "content": f"The highest `{col}` is **{rounded}**{name_context}."}
-
-        elif intent == "min_value":
-            if not col or col not in df.columns:
-                return {"error": "I couldn't identify the exact column to calculate the minimum for."}
-            if not pd.api.types.is_numeric_dtype(df[col]):
-                return {"error": f"The column '{col}' is not numeric."}
-                
-            min_val = df[col].min()
-            idx = df[col].idxmin()
-            
-            name_context = ""
-            if 'name' in df.columns.str.lower():
-                name_col = [c for c in df.columns if c.lower() == 'name'][0]
-                name_context = f" (Belongs to: {df.loc[idx, name_col]})"
-            elif df.columns[0] != col and df[df.columns[0]].dtype == 'object':
-                 name_context = f" (Belongs to: {df.loc[idx, df.columns[0]]})"
-                 
-            rounded = round(min_val, 2) if isinstance(min_val, float) else min_val
-            return {"type": "text", "content": f"The lowest `{col}` is **{rounded}**{name_context}."}
-
-        elif intent == "average":
-            if not col or col not in df.columns:
-                return {"error": "I couldn't identify the exact column to calculate the average for."}
-            if not pd.api.types.is_numeric_dtype(df[col]):
-                return {"error": f"The column '{col}' is not numeric. I can only calculate averages for numbers."}
-                
-            avg_val = df[col].mean()
-            return {"type": "text", "content": f"The average `{col}` is **{round(avg_val, 2)}**."}
-
-        elif intent == "group_by":
-            if not groupby or groupby not in df.columns:
-                return {"error": "I could not identify what category you want to group by in the dataset."}
-            if not col or col not in df.columns:
-                return {"error": "I could not identify which numerical column to calculate across the groups."}
-            if not pd.api.types.is_numeric_dtype(df[col]):
-                return {"error": f"Cannot execute grouped calculation because '{col}' is not numeric."}
-            
-
-            do_metric = metric.lower() if metric else "mean"
-            
-            try:
-                if do_metric == "max":
-                    res = df.groupby(groupby)[col].max()
-                elif do_metric == "min":
-                    res = df.groupby(groupby)[col].min()
-                elif do_metric == "sum":
-                    res = df.groupby(groupby)[col].sum()
-                elif do_metric == "count":
-                    res = df.groupby(groupby)[col].count()
-                else:
-                    res = df.groupby(groupby)[col].mean()
                     
-
-                if sorting == "desc":
-                    res = res.sort_values(ascending=False).head(5)
-                elif sorting == "asc":
-                    res = res.sort_values(ascending=True).head(5)
-                    
-                txt = f"Here is the `{do_metric}` of `{col}` broken down by `{groupby}`:\n"
-                for idx, val in res.items():
-                    rounded = round(val, 2) if isinstance(val, float) else val
-                    txt += f"- **{idx}**: {rounded}\n"
-                return {"type": "text", "content": txt}
+        # 2. Add conversation memory context
+        history_context = ""
+        if chat_history and len(chat_history) > 1:
+            history_context = "\nRecent Conversation History:\n"
+            # Get last 4 messages excluding the current one
+            for msg in chat_history[-5:-1]:
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    history_context += f"{role.capitalize()}: {content}\n"
+        
+        # 3. Rewrite query for specificity
+        full_query = history_context + "\nCurrent Question: " + query
+        structured_query = rewrite_query(full_query, df)
+        
+        # Check for chart requests explicitly to route to UI immediately
+        lower_sq = structured_query.lower()
+        if "chart" in lower_sq or "plot" in lower_sq or "visualize" in lower_sq or "graph" in lower_sq:
+            # We will handle specialized charts if requested, else we just return a text response telling them to use UI toggles
+            if "missing" in lower_sq:
+                fig = viz.chart_missing_values(df)
+                return {"type": "plot", "content": "Here is the missing values chart:", "figure": fig}
+            elif "patient count by service" in lower_sq:
+                fig = viz.chart_patient_count_by_service(df)
+                if fig: return {"type": "plot", "content": "Here is the patient count by service:", "figure": fig}
+            elif "satisfaction by service" in lower_sq:
+                fig = viz.chart_satisfaction_by_service(df)
+                if fig: return {"type": "plot", "content": "Here is the satisfaction by service:", "figure": fig}
+            else:
+                return {
+                    "type": "text", 
+                    "content": "To generate custom charts, please use the 'Chart Settings' toggle in the sidebar or main view and select your X and Y columns."
+                }
                 
-            except Exception as e:
-                return {"error": f"Could not perform Group By calculation. Error: {e}"}
+        # Handle Dataset overview
+        if "dataset overview" in lower_sq or "overview of the most important metrics" in lower_sq:
+             info = f"This dataset has **{len(df)} rows** and **{len(df.columns)} columns**.\n\nColumns: {', '.join(df.columns)}."
+             try:
+                 fig = viz.overview_chart(df)
+                 return {"type": "both", "content": info, "figure": fig}
+             except Exception as e:
+                 return {"type": "text", "content": info + f"\n\n(Could not generate overview chart automatically.)"}
 
-        elif intent == "top_rows":
-            return {"type": "text", "content": "Here is a snapshot of the top 5 rows:\n" + df.head(5).to_markdown()}
-
-
-        elif intent == "chart_patient_count":
-             fig = viz.chart_patient_count_by_service(df)
-             if fig: return {"type": "plot", "figure": fig}
-             return {"error": "Could not generate chart. Ensure the dataset has a categorical 'service' column."}
-             
-        elif intent == "chart_service_satisfaction":
-             fig = viz.chart_satisfaction_by_service(df)
-             if fig: return {"type": "plot", "figure": fig}
-             return {"error": "Could not generate chart. Ensure the dataset has 'service' and 'satisfaction' columns."}
-             
-        elif intent == "chart_missing_values":
-             fig = viz.chart_missing_values(df)
-             return {"type": "plot", "figure": fig}
-
-        else:
-            return {"error": "I couldn't quite understand that. Try asking to find 'averages', 'maximum values', 'missing columns', or say 'generate a dataset overview'."}
-            
+        llm = get_llm()
+        
+        # 4. Create the Pandas DataFrame Agent
+        # We add schema info manually to the prefix, even though the agent does df.head()
+        columns = list(df.columns)
+        dtypes = df.dtypes.astype(str).to_dict()
+        schema_info = "\n".join([f"- {col} ({dtype})" for col, dtype in dtypes.items()])
+        
+        prefix = f"""
+        You are a world-class data analyst Python agent. Your job is to answer user queries by writing and executing Python code on a pandas dataframe `df`.
+        
+        IMPORTANT RULES for ACCURACY:
+        1. NO HALLUCINATIONS: ONLY use columns that exist in the dataframe. Here is the schema:
+        {schema_info}
+        
+        2. MISSING VALUES: Account for missing/NaN values in your calculations (use `.dropna()` or `na_rm=True` equivalents if needed).
+        3. EXACT NUMBERS: Return precise numerical answers. 
+        4. TWO-STEP VALIDATION: Before giving your final answer, double check your code logic ensures the answer targets what was asked.
+        5. DO NOT ATTEMPT TO GENERATE PLOTS OR IMAGES. Provide text/tabular data only.
+        
+        Answer exactly what is asked. Keep your final response clean and professional. Do NOT return code in your final Answer unless asked.
+        """
+        
+        agent = create_pandas_dataframe_agent(
+            llm, 
+            df, 
+            verbose=True, 
+            allow_dangerous_code=True,
+            prefix=prefix,
+            max_iterations=5
+        )
+        
+        # 5. Execute Agent
+        print(f"Executing Agent with structured query: {structured_query}")
+        result = agent.invoke(structured_query)
+        output = result.get("output", "")
+        
+        return {"type": "text", "content": output}
+        
     except Exception as e:
         print(traceback.format_exc())
-        return {"error": f"Safe Execution Router caught a crash while analyzing your request: {str(e)}"}
+        return {"error": f"Agent encountered an error while processing: {str(e)}"}
+
+def query_data(df: pd.DataFrame, user_query: str, chat_history: list = None):
+    """
+    Wrapper for backward compatibility with app.py.
+    """
+    return execute_dataframe_agent(df, user_query, chat_history)
+
