@@ -1,4 +1,8 @@
-venv/
+
+
+cache/
+exports/
+*.dbvenv/
 .env
 __pycache__/
 *.pyc
